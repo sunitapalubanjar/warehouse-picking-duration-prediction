@@ -1,0 +1,1325 @@
+*---
+title: "Data Science Project"
+author: ""
+date: "2025-03-24"
+output: html_document
+---
+
+# Understand the Dataset
+## Load Dataset and data overview
+
+```{r}
+# Load required packages
+
+
+library(readr)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(viridis)  # for scale_fill_viridis_c()
+library(GGally)
+library(ggcorrplot)
+library(dplyr)
+library(car)
+
+
+# Read your dataset
+
+logistics_picking_data <- read_delim("C:/Users/sunit/Desktop/3rd Semester/2nd_sem/4. Data Science Project/Datasets/anonymized_logistics_picking_data (1).csv", delim = ";")
+
+
+# Show structure of the dataset
+glimpse(logistics_picking_data)
+
+#check column names
+colnames(logistics_picking_data)
+
+#check number of rows and columns
+nrow(logistics_picking_data)
+ncol(logistics_picking_data)
+
+# Summary statistics
+summary(logistics_picking_data)
+
+
+```
+Dataset contains 217,963 rows (observations)
+Around 18 variables (some of which may not be useful, or may need transformation)
+
+```{r}
+
+# Count unique values
+length(unique(logistics_picking_data$collli_id))      # Unique colli_id
+length(unique(logistics_picking_data$product_id))    # Unique product_id
+length(unique(logistics_picking_data$picker)) #unique pickers
+
+
+```
+
+
+## Data Cleaning
+###Work on Variables based on RQ
+
+#### Extract Row and Column from location
+
+
+```{r}
+
+# extract row and column from location
+logistics_picking_data <- logistics_picking_data %>%
+  mutate(
+    location_row = as.numeric(str_sub(location, 4, 5)),
+    location_id = as.numeric(str_sub(location, 7, 9))
+  )
+
+```
+
+
+#### Duration Calculation
+
+```{r}
+# convert into date format
+
+library(lubridate)
+head(logistics_picking_data$start_time, 10)
+head(logistics_picking_data$finish_time, 10)
+
+
+# create picking_duration_secs
+
+logistics_picking_data <- logistics_picking_data %>%
+  mutate(picking_duration_sec = as.numeric(difftime(finish_time, start_time, units = "secs")))
+
+
+```
+
+The format od start_time and finish_time format is "dmy HMS". 
+Calculate the total time duration, where pickers take time to pick the items and convert into seconds.
+
+
+#### Convert Volume into numeric
+```{r}
+#convert volume to numeric
+logistics_picking_data <- logistics_picking_data %>%
+  mutate(volume = as.numeric(gsub(",", ".", volume)))
+```
+Here volume has , seperator which is unusual for numeric data. so covert it into . numeric.
+
+
+#### Creating weekday name
+```{r}
+
+head(logistics_picking_data$calday, 10)
+
+Sys.setlocale("LC_TIME", "English_United States.1252")  # For Windows
+
+
+
+logistics_picking_data <- logistics_picking_data %>%
+  mutate(
+    calday_date = ymd(calday),  # Parse 'calday' into Date format
+    weekday_name = weekdays(calday_date)  # Get English weekday names ("Sunday", "Monday")
+  )
+
+```
+Change date into united states  i.e. ymd and create the column of weekdays
+
+### For loop
+To ensure that all categorical variables in the dataset were appropriately formatted for analysis, a for loop was implemented to convert every column of type character into a factor.
+
+```{r}
+for (i in 1:ncol(logistics_picking_data)) {
+  if (is.character(logistics_picking_data[[i]])) {
+    logistics_picking_data[[i]] <- factor(logistics_picking_data[[i]])
+  }
+}
+
+summary(logistics_picking_data)
+```
+
+#EDA
+This section explores the dataset through visualizations such as histograms, bar plots, box plots, and correlation heatmaps to uncover patterns and insights in the data.
+
+Now that your data is structured,we can move on to Exploratory Data Analysis (EDA). This step involves visualizing patterns, distributions, relationships, and outliers to better understand the data before modeling.
+
+## Target Variable Inspection:
+
+### Picking Duration (seconds)
+```{r}
+# Histogram and summary of picking duration to check variablility in efficiency between pickers
+
+
+# Summary stats
+summary(logistics_picking_data$picking_duration_sec)
+
+# Histogram
+hist(logistics_picking_data$picking_duration_sec,
+     breaks = 100,
+     main = "Distribution of Picking Duration (seconds)",
+     xlab = "Picking Duration (seconds)",
+     col = "steelblue")
+
+
+
+```
+This histogram illustrates the distribution of the target variable, picking_duration_sec. The distribution is highly right-skewed, with the vast majority of picking tasks completed in under 100 seconds. However, a long tail extends well beyond 500 seconds, with a maximum of over 2,200 seconds. These long durations are likely outliers that could distort model training and evaluation, and thus warrant removal or transformation.
+
+
+## Feature Relationships
+### Scatterplot and Histogram: Duration vs Volume
+```{r}
+# whether higher volume leads to longer durations.
+
+ggplot(logistics_picking_data, aes(x = volume)) +
+  geom_histogram(fill = "darkorange", bins = 50) +
+  labs(title = "Distribution of Volume (m³)",
+       x = "Volume", y = "Count") +
+  theme_minimal()
+
+plot(logistics_picking_data$volume, logistics_picking_data$picking_duration_sec,
+     main = "Volume vs Picking Duration",
+     xlab = "Volume (m3)",
+     ylab = "Duration (seconds)",
+     pch = 19,
+     col = rgb(0.2, 0.4, 0.6, 0.4))  # semi-transparent dots
+
+
+```
+Like picking duration, volume is also right-skewed, with the majority of picks involving very small volumes or  clustered very close to zero.Most values are less than 0.1 m³, with a few going over 1 m³.This indicates that most picking tasks involve small packages. The skewness suggests that a log transformation may help normalize this variable for regression modeling.
+Scatterplot shows the relationship between volume and picking_duration_sec. Although a weak positive correlation exists — suggesting that higher volumes generally take longer to pick — the relationship is not linear or particularly strong. Many picking durations remain low even for higher volumes. This reinforces the need to consider nonlinear models or apply feature transformation
+
+## Boxplots: Duration by category
+
+### Picking Duration by weekday
+```{r}
+#See if some days are consistently slower/faster.
+
+# Boxplot: duration by weekday
+boxplot(picking_duration_sec ~ weekday_name,
+        data = logistics_picking_data,
+        main = "Picking Duration by Weekday",
+        xlab = "Weekday",
+        ylab = "Duration (seconds)",
+        col = "lightgreen",
+        las = 2)  # rotates labels
+
+#ANOVA TEST 
+
+anova_weekday <- aov(picking_duration_sec ~ weekday_name, data = logistics_picking_data)
+summary(anova_weekday)
+
+
+
+```
+This boxplot compares picking durations across different weekdays. While the overall distribution remains consistent, some day-to-day variability in medians and spread is observed. This suggests that weekday effects may be relevant and should be included in the predictive model as a categorical feature.
+An ANOVA test was also performed to examine the effect of weekday_name on picking duration. The analysis revealed that picking times differ significantly by day of the week (F(6, 208147) = 14.00, p < 0.001). Although the effect is statistically significant, the proportion of variance explained by weekday is relatively small compared to the overall variability in the data. This suggests that while operational patterns vary slightly between weekdays — potentially due to staffing, workload, or scheduling differences — other factors play a more dominant role in predicting picking time. The result still supports including weekday_name as a predictor in the regression model to capture this subtle but consistent temporal effect.
+
+### Duration by picker
+
+
+
+```{r}
+#To check variability in efficiency between pickers.
+
+top_pickers <- logistics_picking_data %>%
+  count(picker, sort = TRUE) %>%
+  top_n(10) %>%
+  pull(picker)
+
+
+logistics_picking_data %>%
+  filter(picker %in% top_pickers) %>%
+  ggplot(aes(x = picker, y = picking_duration_sec)) +
+  geom_boxplot(fill = "lightgreen") +
+  labs(title = "Picking Duration for Top 10 Pickers", x = "Picker", y = "Duration (sec)") +
+  theme_minimal()
+
+#Picker and Duration ANOVA test
+anova_result <- aov(picking_duration_sec ~ picker, data = logistics_picking_data)
+summary(anova_result)
+
+
+```
+The picker-level analysis shows clear variability among the top 10 pickers, with some showing consistently lower picking times than others. This implies that picker has an influence on task duration, possibly due to experience, familiarity with the warehouse, or task allocation. Although categorical and high-cardinality, the picker ID should be considered in modeling using techniques like one-hot encoding or embedding.
+
+An ANOVA test was conducted to assess whether picking duration varied significantly across different pickers. The results showed a significant effect of picker on picking time (F(29, 208124) = 7.47, p < 0.001). While the effect was statistically significant, the sum of squares attributable to picker was small compared to the total residual variance. This suggests that although some pickers consistently perform faster or slower than others, individual variation is only one of several factors influencing picking duration. The result supports the inclusion of picker as a predictor in the regression model, but also highlights the importance of other contextual and task-specific variables.
+
+### Picking duration by product id
+```{r}
+# Top 10 most common product_ids
+top_products <- logistics_picking_data %>%
+  count(product_id, sort = TRUE) %>%
+  top_n(10) %>%
+  pull(product_id)
+
+# Boxplot
+logistics_picking_data %>%
+  filter(product_id %in% top_products) %>%
+  ggplot(aes(x = product_id, y = picking_duration_sec)) +
+  geom_boxplot() +
+  labs(title = "Picking Duration by Top 10 Product IDs",
+       x = "Product ID", y = "Duration (sec)") +
+  theme_minimal()
+
+```
+Additionally, boxplots by product_id indicate that certain products consistently lead to longer picking times, possibly due to size, fragility, or storage location. Although included as part of the EDA, this plot further validates the decision to exclude product_id from the final model. The differences between product durations are subtle, and the anonymized nature of the variable limits interpretability. There is no clear or actionable pattern across product categories.
+
+### picking duration by colli id
+```{r}
+n_distinct(logistics_picking_data$collli_id)
+
+# Average duration by colli_id
+logistics_picking_data %>%
+  group_by(collli_id) %>%
+  summarise(mean_duration = mean(picking_duration_sec, na.rm = TRUE)) %>%
+  arrange(desc(mean_duration)) %>%
+  head(10)
+
+
+```
+
+ The impact of colli_id is even more dramatic, with some IDs associated with durations exceeding 800 seconds. While both variables influence duration, colli_id may need dimensionality reduction due to its high cardinality.
+ 
+### Correlation between numeric variables
+Select relevant numeric columns and plot a correlation matrix:
+
+```{r}
+
+
+
+# Compute correlation matrix
+cor_matrix <- logistics_picking_data %>%
+  select(picking_duration_sec, volume, wm_vsola, location_row, location_id) %>%
+  cor(use = "complete.obs")
+
+# Plot correlation matrix
+ggcorrplot(cor_matrix, 
+           method = "square", 
+           type = "lower", 
+           lab = TRUE, 
+           title = "Correlation Matrix of Numeric Features")
+
+
+```
+This matrix shows the pairwise correlations between numeric variables in the dataset. As expected, the correlations between picking_duration_sec and both volume and wm_vsola are positive but weak (~0.10). Interestingly, location-related variables (row and ID) show small negative correlations, suggesting that certain warehouse zones might be quicker. The low correlations overall suggest that linear models may not fully capture the relationships.
+
+### Heatmap of average duration by location
+```{r}
+
+logistics_picking_data %>%
+  group_by(location_row, location_id) %>%
+  summarise(avg_duration = mean(picking_duration_sec, na.rm = TRUE)) %>%
+  ggplot(aes(x = location_row, y = location_id, fill = avg_duration)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c() +
+  labs(title = "Average Picking Duration by Warehouse Location",
+       x = "Row", y = "location_id") +
+  theme_minimal()
+
+#ANOVA TEST FOR LOCATION ROW
+anova_location <- aov(picking_duration_sec ~ location_row, data = logistics_picking_data)
+summary(anova_location)
+
+#ANOVA test for location id
+anova_location_id <- aov(picking_duration_sec ~ location_id, data = logistics_picking_data)
+summary(anova_location_id)
+
+
+
+```
+This heatmap reveals the average picking duration segmented by location_row and location_id. Visual differences between areas indicate that some zones of the warehouse are associated with consistently higher or lower picking times. This highlights the importance of including spatial warehouse variables (location_row, location_id) in the modeling process.
+
+To investigate how warehouse layout impacts picking duration, a heatmap was created showing the average picking duration across combinations of location_row and location_id. The heatmap revealed clear spatial patterns, with certain areas of the warehouse consistently associated with higher or lower picking times. However, these differences did not follow a smooth or linear trend along the numeric location_id axis. Instead, the color distribution appeared blocky and irregular, indicating that location_id behaves more like a categorical label than a truly continuous numeric variable. In contrast, location_row showed a more consistent spatial order and was retained as a numeric feature. Based on this visual evidence, location_id was converted to a factor in the modeling process to allow the linear model to estimate separate effects for each location without assuming a linear relationship. This approach aligns with the warehouse’s layout, where location codes are arbitrary identifiers rather than true numeric scales, thereby improving model flexibility and interpretability.
+
+To evaluate the influence of warehouse layout on picking duration, ANOVA tests were conducted for both location_row and location_id. The results showed that both variables had a statistically significant effect on task duration, with location_row yielding an F-statistic of 243.2 (p < 0.001) and location_id yielding an F-statistic of 52.77 (p < 0.001). While the variance explained by location_row is more modest, its high F-value suggests a consistent trend where certain rows are associated with faster or slower picking times—likely due to structural or operational differences across the warehouse. In contrast, location_id showed stronger explanatory power among categorical features, reflecting the complexity and variability within row-specific picking locations. These findings align with spatial patterns observed in the warehouse heatmap and support the inclusion of both variables in the predictive model. Notably, location_id was modeled as a categorical factor to account for its non-linear effects, ensuring that the model captures meaningful location-specific differences in picking performance.
+
+
+```
+```
+
+
+# 4. MODELING pREPARATION
+
+##4.1 Handling Missing Values
+### Check for missing values
+```{r}
+# Check missing values in each column
+colSums(is.na(logistics_picking_data))
+
+# Remove columns with only NA
+logistics_picking_data <- logistics_picking_data %>%
+  select(-wm_srsrc, -wm_qdocno)
+
+
+```
+we can see that wm_srsrc and wm_qdocno have 217963 na values, it is better to delete these columns. in start_time we have 94 missing values
+
+# check range key variables
+```{r}
+summary(logistics_picking_data$picking_duration_sec)
+summary(logistics_picking_data$volume)
+summary(logistics_picking_data$location_row)
+summary(logistics_picking_data$location_id)
+
+```
+It can be seen that duration has 94 na values and volume has negative values. so consider filtering to clean data.
+
+```{r}
+
+library(dplyr)
+
+# --- Check for missing (NA) values in key columns ---
+# How many missing values are in start_time, finish_time, and picking_duration_min?
+sum(is.na(logistics_picking_data$start_time))        # Count of missing start_time values
+sum(is.na(logistics_picking_data$finish_time))       # Count of missing finish_time values
+sum(is.na(logistics_picking_data$picking_duration_sec)) # Count of missing picking_duration_min values
+
+
+
+```
+
+During the initial data quality assessment, several issues were identified in the logistics picking dataset. There are 94 missing values in the start_time column, which leads to 94 missing entries in the derived picking_duration_sec variable, as the duration cannot be computed without a valid start time. No missing values were found in the finish_time column.
+
+
+### Decide What to do with missing start_time
+```{r}
+missing_start <- logistics_picking_data %>%
+  filter(is.na(start_time))
+
+summary(missing_start)
+
+
+```
+ 94 rows with missing start_time out of ~217,000 → that’s less than 0.05% of the total data. Very small proportion. All 94 missing values are concentrated among just 4 pickers: picker_31, picker_32, picker_33, and picker_34.These pickers do not appear in the rest of the dataset — or appear rarely.
+
+Suggests this might be a specific batch, training scenario, or system recording error.
+
+```{r}
+logistics_picking_data %>%
+  filter(picker %in% c("picker_31", "picker_32", "picker_33", "picker_34")) %>%
+  group_by(picker) %>%
+  summarise(
+    n_total = n(),
+    n_missing = sum(is.na(picking_duration_sec)),
+    only_missing = n_total == n_missing
+  )
+
+
+```
+To handle the 94 rows with missing start_time (and therefore missing picking_duration_sec), we first verified that both variables shared the same missing entries — meaning that wherever start_time was missing, the picking duration could also not be calculated. These missing cases were concentrated among pickers picker_31 to picker_34, all of whom also had valid picking duration records elsewhere in the dataset. Rather than discarding these rows, we imputed the missing picking_duration_sec values using the mean picking time for each respective picker. This approach allowed us to preserve data from those pickers and maintain the variation in individual performance, while avoiding distortion from outliers that might have impacted mean-based imputation.
+
+### Mean Imputation in duration_sec in missing values
+```{r}
+# Step 1: Calculate picker-level mean duration
+picker_means <- logistics_picking_data %>%
+  filter(!is.na(picking_duration_sec)) %>%
+  group_by(picker) %>%
+  summarise(mean_duration = mean(picking_duration_sec, na.rm = TRUE))
+
+# Step 2: Join back and fill missing durations with mean
+logistics_picking_data <- logistics_picking_data %>%
+  left_join(picker_means, by = "picker") %>%
+  mutate(picking_duration_sec = ifelse(
+    is.na(picking_duration_sec), mean_duration, picking_duration_sec
+  )) %>%
+  select(-mean_duration)  # remove helper column
+
+# View specific pickers' mean durations
+picker_means %>%
+  filter(picker %in% c("picker_31", "picker_32", "picker_33", "picker_34"))
+
+
+
+```
+## 4.2 Feature Selection
+```{r}
+# Convert key categorical variables to factors
+logistics_picking_data$picker <- as.factor(logistics_picking_data$picker)
+logistics_picking_data$location_row <- as.factor(logistics_picking_data$location_row)
+logistics_picking_data$location_id <- as.factor(logistics_picking_data$location_id)
+logistics_picking_data$weekday_name <- as.factor(logistics_picking_data$weekday_name)
+
+```
+Before modeling, categorical variables were explicitly converted to factor type to ensure they were appropriately handled during model fitting. These include picker, location_row, location_id, and weekday_name. This step ensures that linear regression correctly applies dummy variable encoding, and sets the stage for potential tree-based models later, which can naturally split on categorical values.
+
+##4.3 Outlier Removal
+### Group rare pickers
+
+```{r}
+#Linear regression may  struggles with high-cardinality categorical variables like picker.
+picker_freq <- table(logistics_picking_data$picker)
+logistics_picking_data$picker <- as.character(logistics_picking_data$picker)
+logistics_picking_data$picker[picker_freq[logistics_picking_data$picker] < 100] <- "Other"
+logistics_picking_data$picker <- as.factor(logistics_picking_data$picker)
+
+
+
+```
+
+
+
+
+
+###Deal with Volume 
+### check for missing, zero or negative values
+To clean the volume column in the logistics_picking_data dataset, first identify all missing, zero, and negative values, as these are not valid in this context. Then check how many invalid values existed for each product_id to see which products were most affected.
+```{r}
+
+# Load necessary library
+library(dplyr)
+
+# 1. Total missing values in volume
+missing_volume_count <- sum(is.na(logistics_picking_data$volume))
+
+# 2. Count and range of zero or negative values
+#Zero or negative values
+logistics_picking_data %>%
+  filter(volume <= 0) %>%
+  summarise(n = n(), min_val = min(volume), max_val = max(volume))
+
+# 3. Invalid volume analysis per product_id
+invalid_volume_summary <- logistics_picking_data %>%
+  mutate(is_invalid = is.na(volume) | volume <= 0) %>%
+  group_by(product_id) %>%
+  summarise(
+    n_invalid = sum(is_invalid),
+    total = n(),
+    percent_invalid = round(100 * n_invalid / total, 1)
+  ) %>%
+  arrange(desc(n_invalid)) %>%
+  head(20)
+
+# Output results
+missing_volume_count
+invalid_volume_summary
+
+library(ggplot2)
+
+logistics_picking_data %>%
+  filter(product_id %in% c("product_111", "product_130","product_63", "product_112", "product_27", "product_97","product_107", "product_83", "product_102", "product_113" ), volume > 0) %>%
+  ggplot(aes(x = volume)) +
+  geom_histogram(bins = 50) +
+  facet_wrap(~ product_id, scales = "free") +
+  theme_minimal()
+
+
+
+```
+I created histograms to look at the distribution of valid volume values for the most affected products. The charts showed that the data was skewed, with many small values and a few very large ones. Because of this, I decided to use the median to replace invalid values instead of the mean, since the median is not affected by outliers.
+ 
+```{r}
+# Step 1: Flag invalid volumes
+logistics_picking_data <- logistics_picking_data %>%
+  mutate(volume_invalid = is.na(volume) | volume <= 0)
+
+# Step 2: Compute median per product_id
+product_medians <- logistics_picking_data %>%
+  filter(!volume_invalid) %>%
+  group_by(product_id) %>%
+  summarise(median_volume = median(volume, na.rm = TRUE))
+
+# Step 3: Replace invalids with the median
+logistics_picking_data <- logistics_picking_data %>%
+  left_join(product_medians, by = "product_id") %>%
+  mutate(volume = ifelse(volume_invalid, median_volume, volume)) %>%
+  select(-volume_invalid, -median_volume)
+
+```
+
+I flagged all invalid values and calculated the median volume for each product using only the valid entries. Then, I replaced the invalid values with these product-specific medians. This method kept the volume data realistic and accurate for each product.
+
+In the end, the volume column no longer had any missing, zero, or negative values. The cleaned data is now ready for further analysis or modeling.
+
+### Check for Zero durations
+```{r}
+
+# Count how many rows have zero picking duration
+sum(logistics_picking_data$picking_duration_sec == 0)
+
+# How many of the zero durations also have zero volume?
+logistics_picking_data %>%
+  filter(picking_duration_sec == 0 & volume == 0) %>%
+  summarise(count = n())
+
+# How many have zero colli picked?
+logistics_picking_data %>%
+  filter(picking_duration_sec == 0 & wm_vsola == 0) %>%
+  summarise(count = n())
+
+# Check if start_time == finish_time
+logistics_picking_data %>%
+  filter(picking_duration_sec == 0 & start_time == finish_time) %>%
+  summarise(count = n())
+
+# Remove picking_duration_sec value of zero.
+logistics_picking_data <- logistics_picking_data %>%
+  filter(picking_duration_sec > 0)
+
+
+
+```
+A total of 9,809 rows in the dataset had a picking_duration_sec value of zero. Further analysis revealed that all of these tasks had valid volumes and item counts, but 97.7% of them had identical start_time and finish_time, indicating a likely system logging issue. Since the true picking duration could not be recovered or reliably imputed, these rows were excluded from the dataset to preserve the integrity of the target variable used in modeling.
+
+
+#Create Interaction Plot
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Calculate group means
+group_means <- train_data1 %>%
+  group_by(location_id, location_row) %>%
+  summarise(mean_duration = mean(log_duration), .groups = 'drop')
+
+# Plot
+ggplot(group_means, aes(x = location_id, y = mean_duration, color = location_row, group = location_row)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Interaction between Location Row and Location ID",
+       x = "Location ID",
+       y = "Mean Log Duration",
+       color = "Location Row") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+To explore the potential interaction between location_row and location_id on picking duration, I created an interaction plot using grouped means of log_duration. The plot shows how the average task duration varies across location IDs for each row. The patterns are clearly non-parallel, with several lines crossing and diverging — particularly at specific locations. This provides strong evidence of an interaction effect, suggesting that the impact of location on task duration depends on the row in which it occurs. The inclusion of the location_row * location_id interaction term in the regression model is therefore justified. Notably, one outlier appears for location_row 4, where the mean log duration drops sharply for a particular location ID, which may warrant further data investigation.
+
+
+
+#4. MODELING
+## Split the Data (Train/Test)
+
+```{r}
+# Load caret package
+install.packages("pacman")
+
+pacman::p_load(
+  dplyr,#for data manipulation
+  car, #for variance inflation factor calculation
+  caret,#for creating predictive models (Classification And REgression Training)
+  ggvis,#for data visualization
+  rpart.plot#for plotting final decision tree
+)
+
+library(caret)
+
+# Set a seed for reproducibility
+set.seed(123)
+
+# Create training index (80%)
+split_index <- createDataPartition(logistics_picking_data$picking_duration_sec, p = 0.8, list = FALSE)
+
+# Create training and test sets
+train_data <- logistics_picking_data[split_index, ]
+test_data  <- logistics_picking_data[-split_index, ]
+
+# Check sizes
+nrow(train_data)  # should be ~80%
+nrow(test_data)   # should be ~20%
+
+```
+
+```{r}
+# Fit a linear regression model
+lm_model <- lm(
+  picking_duration_sec ~ volume + picker + weekday_name + location_row * location_id,
+  data = train_data
+)
+
+# Model summary
+summary(lm_model)
+
+```
+A multiple linear regression model was fitted to predict picking duration (picking_duration_sec) using volume, picker, weekday_name, location_row, and location_id. The model was statistically significant overall (F(38, 166486) = 73.9, p < 0.001), with an R-squared value of 1.66%. This indicates that the selected variables explain only a small portion of the variation in picking time, highlighting the complexity of the task and the likelihood of other unobserved factors at play. Volume had a strong positive effect: for every 1 m³ increase, picking duration increased by approximately 215 seconds. Most picker IDs were significant, suggesting substantial variability in performance across individuals. Weekday effects were modest, with Saturday associated with slightly higher durations. Location-based predictors (location_row and location_id) were also significant, implying that some warehouse zones may be easier or quicker to pick from than others. Despite the low R², the model aligns with the research objective and provides useful insights into which operational factors contribute most to picking time.
+
+### Predict on Test Set and Evaluate Performance
+```{r}
+# Predict on the test set
+predictions <- predict(lm_model, newdata = test_data)
+
+# Evaluate performance
+install.packages("Metrics")
+library(Metrics)
+
+rmse_value <- rmse(test_data$picking_duration_sec, predictions)
+mae_value  <- mae(test_data$picking_duration_sec, predictions)
+
+cat("RMSE:", round(rmse_value, 2), "\n")
+cat("MAE:", round(mae_value, 2), "\n")
+
+
+```
+The model's predictive performance was evaluated using RMSE and MAE on a holdout test set. The Root Mean Squared Error (RMSE) was 57.75 seconds, and the Mean Absolute Error (MAE) was 15.15 seconds. These metrics indicate that the model’s average prediction deviates from the actual picking time by approximately 15 seconds, with occasional larger errors that increase the RMSE. While not highly accurate, these results are reasonable given the known variability in warehouse operations. They confirm that the selected features — particularly volume, picker, and warehouse location — carry predictive value, though other unmeasured factors likely account for a substantial portion of the variation in picking times.
+
+### Log Transformation
+```{r}
+# Create log-transformed duration column (log(1 + x))
+logistics_picking_data <- logistics_picking_data %>%
+  mutate(log_duration = log1p(picking_duration_sec))
+
+```
+
+```{r}
+library(caret)
+set.seed(123)
+split_index <- createDataPartition(logistics_picking_data$log_duration, p = 0.8, list = FALSE)
+train_data1 <- logistics_picking_data[split_index, ]
+test_data1 <- logistics_picking_data[-split_index, ]
+
+
+```
+
+```{r}
+lm_model_log <- lm(
+  log_duration ~ volume + picker + weekday_name + location_row + location_id,
+  data = train_data1
+)
+
+summary(lm_model_log)
+
+```
+```{r}
+pred_log <- predict(lm_model_log, newdata = test_data)
+pred_original_scale <- expm1(pred_log)
+
+library(Metrics)
+rmse_log <- rmse(test_data1$picking_duration_sec, pred_original_scale)
+mae_log  <- mae(test_data1$picking_duration_sec, pred_original_scale)
+
+cat("Log Model RMSE:", round(rmse_log, 2), "\n")
+cat("Log Model MAE:", round(mae_log, 2), "\n")
+
+
+```
+To address the right-skewed distribution of picking times and improve model performance, a log transformation was applied to the target variable picking_duration_sec, resulting in a new variable log_duration. A linear regression model was then fitted using key predictors: volume, picker, weekday, and warehouse location (row and column).
+
+The transformed model achieved an adjusted R-squared of 20.43%, a substantial improvement over the original model (2.54%), indicating that the log transformation enabled the model to explain significantly more variance in picking duration.
+
+In terms of predictive accuracy, the model achieved a Root Mean Squared Error (RMSE) of 58.07 seconds and a Mean Absolute Error (MAE) of 12.51 seconds, showing that predictions are, on average, just 12.5 seconds off — a strong result in an operational logistics context.
+
+All main predictors remained statistically significant, reinforcing their relevance in explaining picking duration. Overall, this log-transformed model more accurately captures the structure of the data, balances the effect of outliers, and is therefore preferred for both prediction and interpretation in reporting.
+
+
+## FEATURES IMPORTANCE
+```{r}
+library(broom)
+library(dplyr)
+library(ggplot2)
+
+# Tidy the model
+log_coef <- tidy(lm_model_log)
+
+# Group variables
+log_coef <- log_coef %>%
+  mutate(
+    Group = case_when(
+      grepl("^volume", term) ~ "Volume",
+      grepl("^picker", term) ~ "Picker",
+      grepl("^weekday_name", term) ~ "Weekday",
+      grepl("^location_row", term) ~ "Location Row",
+      grepl("^location_id", term) ~ "Location ID",
+      TRUE ~ "Other"
+    )
+  )
+
+# Summarize absolute importance by group
+group_importance <- log_coef %>%
+  filter(term != "(Intercept)") %>%
+  group_by(Group) %>%
+  summarise(Total_Importance = sum(abs(estimate))) %>%
+  ungroup()
+
+# Calculate percentages
+group_importance <- group_importance %>%
+  mutate(Percentage = 100 * Total_Importance / sum(Total_Importance))
+
+# Plot
+ggplot(group_importance, aes(x = reorder(Group, Percentage), y = Percentage)) +
+  geom_bar(stat = "identity", fill = "lightblue") +
+  coord_flip() +
+  labs(
+    title = "Feature Group Contribution (Log-Linear Model)",
+    x = "Feature Group",
+    y = "Percentage Contribution (%)"
+  ) +
+  theme_minimal()
+
+
+
+```
+
+
+## 5.3 Assumption Checks for Linear Regression
+We'll walk through the key assumption checks using your lm_model to see how well it satisfies the underlying assumptions of linear regression.
+
+```{r}
+# Assumption 1: Fixed Functional Form f(x) (Linearity)
+# → Check that the relationship between predictors and the outcome is linear
+
+plot(lm_model_log$fitted.values, resid(lm_model_log),
+     main = "Residuals vs Fitted Values (Linearity Check)",
+     xlab = "Fitted Values", ylab = "Residuals")
+abline(h = 0, col = "red", lwd = 2)
+# Look for a random scatter of points. Patterns (like curves or funnels) suggest non-linearity.
+
+# -------------------------------------------------------------------------
+
+# Assumption 2: No Multicollinearity
+# → Check for high correlation between independent variables using VIF
+
+
+vif_values <- vif(lm_model_log)
+print(vif_values)
+# VIF < 5 is acceptable; VIF > 5 indicates moderate collinearity, > 10 is problematic
+
+# -------------------------------------------------------------------------
+
+# Assumption 3: Normally Distributed Errors (Residuals)
+# → Check that residuals are approximately normally distributed
+
+# Q-Q Plot
+qqnorm(resid(lm_model_log), main = "Q-Q Plot of Residuals")
+qqline(resid(lm_model_log), col = "blue", lwd = 2)
+
+# Histogram
+hist(resid(lm_model_log), breaks = 50, col = "lightblue",
+     main = "Histogram of Residuals", xlab = "Residuals")
+# Should look roughly bell-shaped and symmetric.
+
+# -------------------------------------------------------------------------
+
+# Assumption 4: Homogeneity of Variance (Homoscedasticity)
+# → Residuals should have constant variance across levels of fitted values
+
+library(lmtest)
+bptest(lm_model_log)  # Breusch-Pagan test
+# If p > 0.05, variance is homoscedastic. If p < 0.05, there is heteroscedasticity.
+
+# -------------------------------------------------------------------------
+
+# Assumption 5: Gaussian Distributed Variables (Optional Check for Predictor Skewness)
+# → Predictor variables don’t have to be normal, but checking helps for interpretation
+
+library(e1071)  # for skewness function
+skewness(train_data1$volume)  # Example for a numeric predictor
+# Skewness between -1 and 1 is generally acceptable. Log-transform if highly skewed.
+
+
+
+```
+
+##  MODEL INTERPRETATION: Variable Importance & Interpretation based on your log-linear regression model.
+Which variables have the strongest influence on picking_duration_sec, and how they affect it (in percentage terms)?
+
+```{r}
+
+summary(lm_model_log)
+
+```
+The log-linear regression model identified volume as the most impactful variable, where even small increases substantially lengthen picking duration. Picker identity was also highly influential — most pickers had significantly longer durations compared to the baseline, confirming productivity differences among staff. Weekday effects were modest but consistent, with slightly longer durations on weekends. Additionally, warehouse layout—as captured by location_row and location_id—showed that some areas were consistently faster or slower, possibly due to distance or accessibility. Overall, the model provides strong justification for using these features in forecasting and operational optimization.
+
+
+## EFFECT sIZE vISUALIZATION
+```{r}
+library(broom)
+library(ggplot2)
+
+# Turn model into tidy table
+tidy_coef <- broom::tidy(lm_model_log)
+
+# Keep only significant predictors (optional)
+tidy_coef <- tidy_coef %>%
+  filter(p.value < 0.05)
+
+# Plot
+ggplot(tidy_coef, aes(x = reorder(term, estimate), y = estimate)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Variable Effects on Log Duration",
+       x = "Predictor",
+       y = "Effect (Coefficient)") +
+  theme_minimal()
+
+library(dplyr)
+library(ggplot2)
+library(broom)
+
+# Extract model coefficients
+coef_df <- broom::tidy(lm_model_log)
+
+# Group variables manually
+coef_df$group <- case_when(
+  grepl("volume", coef_df$term) ~ "Volume",
+  grepl("picker", coef_df$term) ~ "Picker",
+  grepl("weekday_name", coef_df$term) ~ "Weekday",
+  grepl("location_id", coef_df$term) ~ "Location ID",
+  grepl("location_row", coef_df$term) ~ "Location Row",
+  TRUE ~ "Other"
+)
+
+# Calculate group-wise total importance (absolute value of coefficients)
+group_importance <- coef_df %>%
+  mutate(abs_estimate = abs(estimate)) %>%
+  group_by(group) %>%
+  summarise(total_effect = sum(abs_estimate)) %>%
+  mutate(percentage = 100 * total_effect / sum(total_effect))
+
+# Plot
+ggplot(group_importance, aes(x = reorder(group, -percentage), y = percentage)) +
+  geom_col(fill = "skyblue") +
+  coord_flip() +
+  labs(title = "Simplified Feature Importance (Log-Linear Model)",
+       x = "Feature Group",
+       y = "Percentage Contribution (%)") +
+  theme_minimal()
+
+
+```
+To better interpret the effect of predictors on picking duration, we grouped related features together: volume, picker identity, weekday, location row, and location ID.
+
+Based on the log-linear regression coefficients, the most influential factor was Picker, explaining approximately 76% of the total effect size, followed by Location ID (18%) and Volume (5%).
+
+In contrast, Location Row and Weekday contributed less than 1% each.
+
+This finding suggests that individual picker performance and specific warehouse locations are the primary drivers of picking time, while the day of the week has a relatively minor influence.
+
+A simplified bar plot of percentage contribution is shown in Figur to visualize the relative importance of each group.
+
+
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+```
+
+## Visualizing Important Variables
+
+### 1. Top Influential Pickers
+```{r top-pickers}
+# Extract picker coefficients
+coef_df <- as.data.frame(coef(summary(lm_model_log)))
+coef_df$variable <- rownames(coef_df)
+
+picker_effects <- coef_df %>%
+  filter(grepl("pickerpicker_", variable)) %>%
+  mutate(picker = gsub("pickerpicker_", "", variable)) %>%
+  select(picker, Estimate)
+
+picker_effects %>%
+  top_n(10, wt = Estimate) %>%
+  ggplot(aes(x = reorder(picker, Estimate), y = Estimate)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 10 Pickers with Highest Picking Time Effect",
+       x = "Picker", y = "Coefficient (log scale)")
+```
+
+### 2. Effect of Weekday on Picking Time
+```{r weekday-effect}
+weekday_effects <- coef_df %>%
+  filter(grepl("weekday_name", variable)) %>%
+  mutate(weekday = gsub("weekday_name", "", variable)) %>%
+  select(weekday, Estimate)
+
+ggplot(weekday_effects, aes(x = reorder(weekday, Estimate), y = Estimate)) +
+  geom_col(fill = "orange") +
+  labs(title = "Effect of Weekday on Picking Duration (log scale)",
+       x = "Weekday", y = "Coefficient") +
+  theme_minimal()
+```
+
+### 3. Effect of Warehouse Location (Location ID)
+```{r location-effect}
+location_effects <- coef_df %>%
+  filter(grepl("location_id", variable)) %>%
+  mutate(location = gsub("location_id", "", variable)) %>%
+  select(location, Estimate)
+
+ggplot(location_effects, aes(x = reorder(location, Estimate), y = Estimate)) +
+  geom_col(fill = "purple") +
+  labs(title = "Effect of Warehouse Location on Picking Time (log scale)",
+       x = "Location ID", y = "Coefficient") +
+  coord_flip() +
+  theme_minimal()
+```
+
+### 4. Effect of location_row on picking duration
+```{r}
+
+# Extract coefficients related to location_row
+row_effects <- broom::tidy(lm_model_log) %>%
+  filter(grepl("location_row", term))
+
+# Clean term names
+row_effects <- row_effects %>%
+  mutate(location_row = gsub("location_row", "", term))
+
+# Plot
+ggplot(row_effects, aes(x = reorder(location_row, estimate), y = estimate)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Effect of Warehouse Row on Picking Time (Log Scale)",
+    x = "Row Number",
+    y = "Coefficient (log scale)"
+  ) +
+  theme_minimal()
+
+```
+
+### Row and column impact
+```{r}
+# Average picking time by row and column
+logistics_picking_data %>%
+  group_by(location_row, location_id) %>%
+  summarise(avg_log_duration = mean(log_duration, na.rm = TRUE)) %>%
+  ggplot(aes(x = location_id, y = location_row, fill = avg_log_duration)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c() +
+  labs(
+    title = "Average Log Picking Time by Warehouse Grid",
+    x = "Column",
+    y = "Row"
+  ) +
+  theme_minimal()
+
+```
+
+### 4. Effect of Volume
+```{r volume-effect}
+ggplot(train_data1, aes(x = volume, y = log_duration)) +
+  geom_point(alpha = 0.2, color = "blue") +
+  geom_smooth(method = "lm", color = "red") +
+  labs(title = "Relationship between Volume and Log Picking Duration",
+       x = "Volume (m³)", y = "Log Picking Duration (sec)") +
+  theme_minimal()
+
+```
+
+
+
+
+
+
+```{r}
+# Residual vs Fitted
+plot(lm_model$fitted.values, lm_model$residuals,
+     xlab = "Fitted Values",
+     ylab = "Residuals",
+     main = "Residuals vs Fitted Values",
+     pch = 20, col = "steelblue")
+abline(h = 0, col = "red", lwd = 2)
+
+# Q-Q Plot
+qqnorm(lm_model$residuals, main = "Q-Q Plot of Residuals")
+qqline(lm_model$residuals, col = "red", lwd = 2)
+
+# Histogram of Residuals
+hist(lm_model$residuals,
+     breaks = 50,
+     main = "Histogram of Residuals",
+     xlab = "Residuals",
+     col = "lightblue")
+# Check multicollinearity using VIF
+library(car)
+vif_values <- vif(lm_model)
+print(vif_values)
+
+
+```
+Assumption diagnostics for the linear regression model revealed several violations of key linear model assumptions. The residuals vs fitted values plot showed a clear funnel-shaped pattern, indicating heteroscedasticity and poor fit for higher predicted values. The Q-Q plot and histogram both demonstrated non-normality of residuals, with significant right skew and heavy tails. However, multicollinearity was not a concern, as VIF values for all predictors were below 2. These findings suggest that a linear regression model is not well-suited for this problem, and a more flexible, non-parametric modeling approach such as a tree-based model may yield better performance.
+
+## 5.4 Fit a Tree-Based Model (Random Forest)
+
+```{r}
+library(randomForest)
+install.packages("randomForest")
+library(randomForest)
+
+```
+train_data_rf <- train_data1  # assuming your preprocessed training data
+test_data_rf <- test_data1
+
+#Train the model random forest 
+rf_model <- randomForest(
+  picking_duration_sec ~ volume + picker + weekday_name + location_row + location_id,
+  data = train_data_rf,
+  ntree = 50,     # number of trees
+  mtry = 3,        # number of variables tried at each split
+  importance = TRUE
+)
+# evaluate the model
+rf_pred <- predict(rf_model, newdata = test_data_rf)
+library(Metrics)
+
+rmse_rf <- rmse(test_data_rf$picking_duration_sec, rf_pred)
+mae_rf <- mae(test_data_rf$picking_duration_sec, rf_pred)
+
+cat("Random Forest RMSE:", round(rmse_rf, 2), "\n")
+cat("Random Forest MAE :", round(mae_rf, 2), "\n")
+varImpPlot(rf_model)
+
+
+
+## TRY USING rANGER
+```{r}
+# Install if not yet installed
+install.packages("ranger")
+
+# Load required libraries
+library(ranger)
+library(Metrics)
+
+# Make sure categorical variables are factors
+train_data$picker <- as.factor(train_data$picker)
+train_data$weekday_name <- as.factor(train_data$weekday_name)
+train_data$location_id <- as.factor(train_data$location_id)
+
+test_data$picker <- as.factor(test_data$picker)
+test_data$weekday_name <- as.factor(test_data$weekday_name)
+test_data$location_id <- as.factor(test_data$location_id)
+
+# Fit the Random Forest model using ranger
+rf_model_ranger <- ranger(
+  picking_duration_sec ~ volume + picker + weekday_name + location_row + location_id,
+  data = train_data,
+  num.trees = 200,
+  mtry = 3,
+  importance = "impurity",
+  seed = 123
+)
+
+# Predict on test set
+rf_pred <- predict(rf_model_ranger, data = test_data)$predictions
+
+# Evaluate performance
+rf_rmse <- rmse(test_data$picking_duration_sec, rf_pred)
+rf_mae  <- mae(test_data$picking_duration_sec, rf_pred)
+
+cat("Random Forest RMSE:", round(rf_rmse, 2), "\n")
+cat("Random Forest MAE:", round(rf_mae, 2), "\n")
+
+```
+
+```{r}
+install.packages("randomForest")  # if not already installed
+library(randomForest)
+
+```
+
+```{r}
+install.packages("ranger")
+library(ranger)
+
+# Fast + efficient random forest
+rf_model_ranger <- ranger(
+  picking_duration_sec ~ volume + picker + weekday_name + location_row + location_id,
+  data = train_data,
+  num.trees = 100,          # fewer trees to reduce time
+  mtry = 3,
+  importance = "impurity",  # to enable feature importance
+  seed = 123
+)
+print(rf_model_ranger)
+
+# View variable importance
+rf_model_ranger$variable.importance
+
+```
+A random forest model was trained using the ranger package to predict picking_duration_sec using the predictors aligned with the research question: volume, picker, weekday_name, location_row, and location_id. The model was trained on 166,525 picking tasks and evaluated using out-of-bag (OOB) performance metrics. The model produced an OOB R-squared of −0.053, indicating that it explained less variance than a naive mean-based model. Despite this, variable importance scores revealed that picker, volume, weekday_name, and location_id were the most influential features. These findings suggest that while the selected variables do carry some predictive signal, they may not be sufficient alone to accurately predict picking duration — likely due to hidden operational factors or noise not captured in the available data. The results also reinforce the complexity and unpredictability of real-world warehouse picking behavior.
+
+
+## Plot predicted vs. actual values to visually show model accuracy
+```{r}
+# Predict on test set
+pred_log <- predict(lm_model_log, newdata = test_data1)
+pred_original_scale <- expm1(pred_log)  # back-transform from log
+
+# Create a comparison dataframe
+comparison_df <- data.frame(
+  Actual = test_data1$picking_duration_sec,
+  Predicted = pred_original_scale
+)
+
+# Plot
+library(ggplot2)
+ggplot(comparison_df, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.3, color = "steelblue") +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Actual vs Predicted Picking Duration",
+    x = "Actual Duration (sec)",
+    y = "Predicted Duration (sec)"
+  ) +
+  theme_minimal()
+
+```
+The majority of points cluster close to the 45-degree line, indicating that the model predicts picking durations reasonably well. However, deviations at higher actual durations suggest that rare long tasks are harder to predict accurately.
+
+## DECISION TREE
+
+```{r}
+# 1. Split into train/test
+library(caret)
+
+set.seed(123)
+split_index <- createDataPartition(logistics_picking_data$picking_duration_sec, p = 0.8, list = FALSE)
+
+train_data_dt <- logistics_picking_data[split_index, ]
+test_data_dt  <- logistics_picking_data[-split_index, ]
+
+# 2. Fit the Decision Tree
+library(rpart)
+tree_model <- rpart(
+  picking_duration_sec ~ volume + picker + weekday_name + location_row + location_id,
+  data = train_data_dt,
+)
+
+summary(tree_model)
+
+# 3. Visualize the tree
+library(rpart.plot)
+rpart.plot(tree_model)
+
+# 4. Predict and Evaluate
+tree_pred <- predict(tree_model, newdata = test_data_dt)
+
+library(Metrics)
+rmse_tree <- rmse(test_data_dt$picking_duration_sec, tree_pred)
+mae_tree  <- mae(test_data_dt$picking_duration_sec, tree_pred)
+
+cat("Decision Tree RMSE:", round(rmse_tree, 2), "\n")
+cat("Decision Tree MAE:", round(mae_tree, 2), "\n")
+
+
+```
+
+
+
+## Feature Importance
+```{r}
+# Assuming you already have the decision tree model (say "tree_model")
+# Example: tree_model <- rpart(picking_duration_sec ~ volume + picker + weekday_name + location_row + location_id, data = train_data)
+
+# Extract variable importance
+importance_values <- tree_model$variable.importance
+
+# Put into a nice table
+importance_df <- data.frame(
+  Variable = names(importance_values),
+  Importance = round(importance_values, 2)
+)
+
+# Arrange by importance
+importance_df <- importance_df[order(-importance_df$Importance), ]
+
+# Print it
+print(importance_df)
+
+# Optional: Nice Bar Plot
+library(ggplot2)
+ggplot(importance_df, aes(x = reorder(Variable, Importance), y = Importance)) +
+  geom_col(fill = "skyblue") +
+  coord_flip() +
+  labs(title = "Decision Tree Feature Importance",
+       x = "Feature",
+       y = "Importance Score")
+
+```
+The decision tree model found that volume, location ID, and location row were the dominant predictors of picking duration, with volume having nearly twice the impact of location ID. Picker identity and weekday effects, while statistically significant in linear models, contributed far less to predictive power in the tree-based structure.
+
+
+# predict on test set
+```{r}
+# Predict on your test set
+tree_predictions <- predict(tree_model, newdata = test_data)
+
+# Compute RMSE and MAE
+library(Metrics)
+
+tree_rmse <- rmse(test_data$picking_duration_sec, tree_predictions)
+tree_mae  <- mae(test_data$picking_duration_sec, tree_predictions)
+
+cat("Decision Tree RMSE:", round(tree_rmse, 2), "\n")
+cat("Decision Tree MAE:", round(tree_mae, 2), "\n")
+
+#pseudo-R2
+SSE <- sum((tree_predictions - test_data$picking_duration_sec)^2)
+SST <- sum((mean(test_data$picking_duration_sec) - test_data$picking_duration_sec)^2)
+tree_r2 <- 1 - SSE/SST
+
+cat("Decision Tree pseudo R²:", round(tree_r2, 4))
+
+
+```
+
+Although the Decision Tree achieved a comparable RMSE of 57.6 seconds, its MAE was higher and its pseudo-R² substantially lower than that of the log-linear model. The tree prioritized operationally interpretable splits (especially on volume and warehouse location), offering intuitive business insights despite a lower predictive power. Consequently, the log-linear model remains the preferred predictive model, while the decision tree serves as a valuable explanatory tool
+
+## Back to Duration
+# Predict log durations
+```{r}
+# Predict log durations
+pred_log <- predict(lm_model_log, newdata = test_data1)
+
+# Convert log predictions to original scale
+pred_original_scale <- expm1(pred_log)
+
+
+```
+
+
+### Decison Tree Simple
+```{r}
+# Load required packages
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(ggplot2)
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Define the formula
+formula_dt <- picking_duration_sec ~ volume + picker + weekday_name + location_row + location_id
+
+# Train the decision tree model using caret
+model_dt <- train(
+  formula_dt,
+  data = train_data,
+  method = "rpart",  # Recursive partitioning for regression
+  trControl = trainControl(method = "cv", number = 20),  # 20-fold cross-validation
+  tuneLength = 20  # Try different levels of complexity
+)
+
+# View the model
+print(model_dt)
+rpart.plot(model_dt$finalModel, main = "Decision Tree for Picking Duration")
+
+# Make predictions on test set
+predictions_dt <- predict(model_dt, newdata = test_data)
+
+# Evaluate performance
+library(Metrics)
+rmse_dt <- rmse(test_data$picking_duration_sec, predictions_dt)
+mae_dt <- mae(test_data$picking_duration_sec, predictions_dt)
+
+cat("Decision Tree RMSE:", round(rmse_dt, 2), "\n")
+cat("Decision Tree MAE :", round(mae_dt, 2), "\n")
+
+```
+```{r}
+# R-squared from cross-validated training
+model_dt$results  # shows RMSE, Rsquared, and MAE for all tuning parameters
+
+# Best tuned R-squared
+best_r2 <- model_dt$results$Rsquared[model_dt$results$cp == model_dt$bestTune$cp]
+cat("Decision Tree R-squared:", round(best_r2, 4), "\n")
+
+```
+
+
+
+ 
+

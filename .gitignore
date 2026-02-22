@@ -1,0 +1,6 @@
+# Data files
+.data/
+*.csv
+
+.renv/
+.renv.lock
