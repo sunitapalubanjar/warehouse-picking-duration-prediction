@@ -1,0 +1,238 @@
+---
+title: "modeling_preparation"
+output: html_document
+---
+
+```{r}
+
+library(readr)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+
+```
+
+
+```{r}
+# 1) Load cleaned data
+logistics_picking_data <- readRDS("../data/clean_logistics_picking_data.rds")
+```
+
+# 4. Modeling Preparation
+## 4.1 Handling Missing Values
+Before modeling, I checked for missing values. Two variables (wm_srsrc, wm_qdocno) were entirely missing and removed. Additionally, 94 rows had missing values in time-related fields, affecting the calculation of picking duration.
+```{r}
+# Check missing values by column
+colSums(is.na(logistics_picking_data))
+
+```
+
+
+
+```{r}
+# Drop columns that are fully missing
+logistics_picking_data <- logistics_picking_data %>%
+  select(-wm_srsrc, -wm_qdocno)
+```
+we can see that wm_srsrc and wm_qdocno have 217963 na values, it is better to delete these columns.
+
+
+
+```{r}
+# check range key variables
+summary(logistics_picking_data$picking_duration_sec)
+summary(logistics_picking_data$volume)
+summary(logistics_picking_data$location_row)
+summary(logistics_picking_data$location_id)
+
+```
+It can be seen that duration has 94 na values and volume has negative values. so consider filtering to clean data.
+
+
+## 4.2 Handling Missing Picking Duration
+### 4.2.1 Detect and Investigate Missing Values
+
+```{r}
+
+# Check number of missing durations
+sum(is.na(logistics_picking_data$picking_duration_sec))
+
+```
+```{r}
+# Identify affected rows
+missing_start <- logistics_picking_data %>%
+  filter(is.na(start_time))
+
+# Summary of missing rows
+summary(missing_start)
+```
+
+```{r}
+# Analyze missingness by picker
+logistics_picking_data %>%
+  filter(picker %in% c("picker_31", "picker_32", "picker_33", "picker_34")) %>%
+  group_by(picker) %>%
+  summarise(
+    n_total = n(),
+    n_missing = sum(is.na(picking_duration_sec)),
+    only_missing = n_total == n_missing
+  )
+```
+
+The summary confirmed that all 94 missing durations were linked to the same pickers, but each picker also had valid records elsewhere. This supported the decision to impute rather than drop.
+
+### 4.2.2 Mean Imputation of Missing Durations
+
+```{r}
+# Step 1: Calculate mean picking duration by picker
+picker_means <- logistics_picking_data %>%
+  filter(!is.na(picking_duration_sec)) %>%
+  group_by(picker) %>%
+  summarise(mean_duration = mean(picking_duration_sec, na.rm = TRUE))
+
+# Step 2: Fill missing durations with picker-level means
+logistics_picking_data <- logistics_picking_data %>%
+  left_join(picker_means, by = "picker") %>%
+  mutate(picking_duration_sec = ifelse(
+    is.na(picking_duration_sec), mean_duration, picking_duration_sec
+  )) %>%
+  select(-mean_duration)  # Remove helper column
+
+# View imputed means for affected pickers
+picker_means %>%
+  filter(picker %in% c("picker_31", "picker_32", "picker_33", "picker_34"))
+
+```
+ This imputation preserved all rows while ensuring consistency in task duration values. It also maintained picker-specific performance trends, which is important for accurate modeling and interpretation.
+ 
+## 4.3 Outlier and Invalid Value Treatment
+To improve model robustness, I addressed two key sources of irregularity: rare picker values and invalid volume entries. Rare pickers (with fewer than 100 tasks) were grouped under a single “Other” category to reduce high cardinality. I also inspected the volume column for missing, zero, or negative values, which are not physically meaningful in this context. The investigation identified 204 non-positive entries across multiple products, prompting further filtering.
+
+```{r}
+# Group rare pickers (<100 tasks) into "Other"
+picker_freq <- table(logistics_picking_data$picker)
+logistics_picking_data$picker <- as.character(logistics_picking_data$picker)
+logistics_picking_data$picker[picker_freq[logistics_picking_data$picker] < 100] <- "Other"
+logistics_picking_data$picker <- as.factor(logistics_picking_data$picker)
+
+# Check for invalid volume values (NA, zero, or negative)
+sum(is.na(logistics_picking_data$volume))  # Missing volumes
+
+
+```
+
+
+```{r}
+logistics_picking_data %>%
+  filter(volume <= 0) %>%
+  summarise(n = n(), min_val = min(volume), max_val = max(volume))
+```
+```{r}
+# Product-level summary of invalid volume
+invalid_volume_summary <- logistics_picking_data %>%
+  mutate(is_invalid = is.na(volume) | volume <= 0) %>%
+  group_by(product_id) %>%
+  summarise(
+    n_invalid = sum(is_invalid),
+    total = n(),
+    percent_invalid = round(100 * n_invalid / total, 1)
+  ) %>%
+  arrange(desc(n_invalid)) %>%
+  head(20)
+
+# Visualize volume distribution for top affected products (positive volumes only)
+logistics_picking_data %>%
+  filter(product_id %in% c("product_111", "product_130", "product_63", "product_112", 
+                           "product_27", "product_97", "product_107", "product_83", 
+                           "product_102", "product_113"),
+         volume > 0) %>%
+  ggplot(aes(x = volume)) +
+  geom_histogram(bins = 50) +
+  facet_wrap(~ product_id, scales = "free") +
+  theme_minimal()
+```
+Pickers with fewer than 100 tasks were grouped into an “Other” category to reduce categorical noise. For volume, 204 invalid (≤ 0) values were identified across several products. These entries were flagged for removal in subsequent filtering steps. This ensures that all values used in modeling are physically valid and meaningful.
+
+
+```{r}
+# Step 1: Flag invalid volumes
+logistics_picking_data <- logistics_picking_data %>%
+  mutate(volume_invalid = is.na(volume) | volume <= 0)
+
+# Step 2: Compute median per product_id
+product_medians <- logistics_picking_data %>%
+  filter(!volume_invalid) %>%
+  group_by(product_id) %>%
+  summarise(median_volume = median(volume, na.rm = TRUE))
+
+# Step 3: Replace invalids with the median
+logistics_picking_data <- logistics_picking_data %>%
+  left_join(product_medians, by = "product_id") %>%
+  mutate(volume = ifelse(volume_invalid, median_volume, volume)) %>%
+  select(-volume_invalid, -median_volume)
+```
+
+All invalid volume values were imputed using the product-specific median, and rows with zero task duration were removed. These changes improved data consistency while preserving real-world variation, ensuring the dataset is well-prepared for modeling.
+
+## 4.5 Handling Zero Durations
+```{r}
+# Check for zero durations
+sum(logistics_picking_data$picking_duration_sec == 0)
+```
+
+```{r}
+# check other conditions
+logistics_picking_data %>%
+  filter(picking_duration_sec == 0 & start_time == finish_time) %>%
+  summarise(count = n())
+```
+
+
+```{r}
+# Remove rows with zero duration
+logistics_picking_data <- logistics_picking_data %>%
+  filter(picking_duration_sec > 0)
+```
+
+I checked for and removed records with picking_duration_sec == 0, as they do not provide meaningful information for modeling time-based efficiency. Most of these rows (9,780 out of 9,809) had identical start_time and finish_time, confirming a likely system error during logging. These rows were filtered out to improve data quality.
+
+## 4.6 Feature Selection and Encoding
+Prior to modeling, I converted key categorical variables to factors to ensure correct encoding. This is essential for linear models, which require explicit factor levels to apply dummy variable encoding. The variables picker, location_row, location_id, and weekday_name were selected based on prior EDA and domain relevance in the warehouse context.
+
+```{r}
+# Convert key variables to factor type for modeling
+logistics_picking_data$picker <- as.factor(logistics_picking_data$picker)
+logistics_picking_data$location_row <- as.factor(logistics_picking_data$location_row)
+logistics_picking_data$location_id <- as.factor(logistics_picking_data$location_id)
+logistics_picking_data$weekday_name <- as.factor(logistics_picking_data$weekday_name)
+
+```
+
+This ensures that all selected categorical predictors are handled correctly during model training. It also improves compatibility with both linear and tree-based models, which interpret factor variables differently.
+
+## 4.7 Splitting the Data
+
+```{r}
+library(caret)
+
+# Set a seed for reproducibility
+set.seed(123)
+
+# Create training index (80%)
+split_index <- createDataPartition(logistics_picking_data$picking_duration_sec, p = 0.8, list = FALSE)
+
+# Create training and test sets
+train_data <- logistics_picking_data[split_index, ]
+test_data  <- logistics_picking_data[-split_index, ]
+
+# Check sizes
+nrow(train_data)  # ~80% of data
+
+nrow(test_data)   # ~20% of data
+
+```
+
+
+
+

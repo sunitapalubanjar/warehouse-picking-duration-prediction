@@ -1,7 +1,16 @@
 # Data files
 data/
 *.csv
+*.xlsx
+
+# renv
+renv/
+renv.lock
 
 
-.renv/
-.renv.lock
+# R specific
+.RData
+.Rprofile
+.Rproj.user
+.Rhistory
+*.Rproj

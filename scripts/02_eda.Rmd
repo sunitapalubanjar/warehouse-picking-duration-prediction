@@ -3,9 +3,23 @@ title: "EDA"
 output: html_document
 ---
 
+
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+
+
+```{r}
+library(readr)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+library(ggcorrplot)
+```
+
+
 
 ```{r}
 # 1) Load cleaned data
