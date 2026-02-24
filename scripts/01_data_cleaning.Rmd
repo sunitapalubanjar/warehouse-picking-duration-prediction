@@ -23,17 +23,11 @@ library(ggplot2)
 library(dplyr)
 
 
-
-
 # Read dataset
 
 logistics_picking_data <- read_delim("../data/anonymized_logistics_picking_data.csv", delim = ";")
 
 
-
-
-```
-```{r}
 
 # Summary statistics
 summary(logistics_picking_data)

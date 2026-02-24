@@ -233,6 +233,13 @@ nrow(test_data)   # ~20% of data
 
 ```
 
+```{r}
+# save 
 
+saveRDS(train_data, "../data/train_data.rds")
+
+saveRDS(test_data, "../data/test_data.rds")
+
+```
 
 

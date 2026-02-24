@@ -1,0 +1,353 @@
+---
+title: "linear_regression_modeling"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(readr)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+library(ggcorrplot)
+library(Metrics)
+library(GGally)    # For advanced EDA plots
+library(broom)
+
+```
+
+
+
+```{r}
+#load train and test data
+train_data <- readRDS("data/train_data.rds")
+test_data  <- readRDS("data/test_data.rds")
+```
+
+
+
+# 5. Modeling
+## 5.1 Model Fitting
+I fitted two linear regression models: one using the original picking_duration_sec and another using its log-transformed version to improve fit and meet linear model assumptions.
+
+### 5.1.1 Linear Regression Model (Original Target Variable)
+
+```{r}
+# Fit a linear regression model
+lm_model <- lm(
+  picking_duration_sec ~ volume + picker + weekday_name + location_row * location_id,
+  data = train_data
+)
+
+# Model summary
+summary(lm_model)
+
+```
+The model was statistically significant overall (p-value < 2.2e-16), but the R² was quite low (3.3%), indicating that the model explains only a small fraction of the variability in picking duration. Additionally, the residuals were large and skewed, which suggested potential violation of linear model assumptions such as homoscedasticity and normality of errors.
+
+This led us to consider a log transformation of the response variable to stabilize variance and improve model fit.
+
+
+
+
+### 5.1.2 Log- Transformed Regression Model
+To improve model performance and satisfy regression assumptions, I applied a log transformation to the target variable, creating a new variable log_duration = log1p(picking_duration_sec). The transformation reduces skewness, stabilize variance and make the distribution more normal-like.
+
+Step 1: Create the Log-Transformed Target Variable
+
+```{r}
+# Create log-transformed duration column (log(1 + x))
+logistics_picking_data <- logistics_picking_data %>%
+  mutate(log_duration = log1p(picking_duration_sec))
+
+```
+
+step 2: Train and test split
+```{r}
+# Train-test split using caret
+library(caret)
+set.seed(123)
+split_index <- createDataPartition(logistics_picking_data$log_duration, p = 0.8, list = FALSE)
+train_data1 <- logistics_picking_data[split_index, ]
+test_data1 <- logistics_picking_data[-split_index, ]
+```
+
+## 5.2 Fit Linear Model
+```{r}
+lm_model_log <- lm(
+  log_duration ~ volume + picker + weekday_name + location_row + location_id,
+  data = train_data1
+)
+
+summary(lm_model_log)
+```
+This log-transformed model shows a notable improvement, with an adjusted R-squared of ~0.204, indicating that the model now explains approximately 20.4% of the variance in the log-transformed outcome. The residuals are also more normally distributed, which improves the reliability of the regression estimates.
+
+## 5.3 Assumption Checks for Linear Regression
+To ensure that the linear regression model with log-transformed target variable (log_duration) satisfies the assumptions of linear regression, I conducted a series of diagnostic checks. These include linearity, multicollinearity, normality of residuals, homoscedasticity, and optional checks for skewness in predictors.
+
+  1. Linearity of the Relationship:
+
+```{r}
+# Residuals vs Fitted values plot
+plot(lm_model_log$fitted.values, resid(lm_model_log),
+     main = "Residuals vs Fitted Values (Linearity Check)",
+     xlab = "Fitted Values", ylab = "Residuals")
+abline(h = 0, col = "red", lwd = 2)
+```
+
+  2. No Multicollinearity
+```{r}
+
+# Check multicollinearity
+library(car)
+
+vif_values <- vif(lm_model_log)
+print(vif_values)
+```
+
+  3. Normality of Residuals:
+```{r}
+# Q-Q plot of residuals
+qqnorm(resid(lm_model_log), main = "Q-Q Plot of Residuals")
+qqline(resid(lm_model_log), col = "blue", lwd = 2)
+```
+
+
+```{r}
+# Histogram of standardized residuals
+library(ggplot2)
+standardized_resid <- rstandard(lm_model_log)
+resid_df <- data.frame(standardized_resid)
+
+ggplot(resid_df, aes(x = standardized_resid)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "lightblue", color = "black") +
+  stat_function(fun = dnorm, args = list(mean = mean(standardized_resid), 
+                                         sd = sd(standardized_resid)),
+                col = "black", linewidth = 1) +
+  labs(title = "Histogram of Standardized Residuals",
+       subtitle = "Dependent Variable: log_duration",
+       x = "Standardized Residual", y = "Density") +
+  theme_minimal(base_size = 14)
+```
+
+  4.Homoscedasticity (Constant Variance) Breusch-Pagan test was used to detect heteroscedasticity (non-constant variance of residuals).
+```{r}
+# Breusch-Pagan Test
+library(lmtest)
+bptest(lm_model_log)
+
+```
+The linear regression model satisfies the assumption of no multicollinearity, as all GVIF values are well below the threshold of concern. However, the residuals vs. fitted plot suggests non-linearity, indicating that the model may not fully capture the true relationships between predictors and the outcome. Additionally, the Q-Q plot and histogram show deviations from normality, particularly in the tails, and the Breusch-Pagan test confirms the presence of heteroscedasticity (p < 0.001). These violations suggest that while the model is statistically significant and reasonably robust due to the large sample size, improvements such as adding non-linear terms or switching to more flexible models could enhance performance and reliability.
+
+## 5.4 Model Prediction and Evaluation
+
+```{r}
+# Predict using the log-transformed linear model
+pred_log <- predict(lm_model_log, newdata = test_data1)
+
+# Convert predictions back to original scale
+pred_original_scale <- expm1(pred_log)
+
+# Evaluate performance on test set
+rmse_log <- rmse(test_data1$picking_duration_sec, pred_original_scale)
+mae_log  <- mae(test_data1$picking_duration_sec, pred_original_scale)
+
+# Display results
+cat("Log Model RMSE:", round(rmse_log, 2), "\n")
+
+cat("Log Model MAE:", round(mae_log, 2), "\n")
+```
+In terms of predictive accuracy, the model achieved a Root Mean Squared Error (RMSE) of 58.07 seconds and a Mean Absolute Error (MAE) of 12.51 seconds, showing that predictions are, on average, just 12.5 seconds off — a strong result in an operational logistics context.
+
+## 5.5 Model Interpretation and Variable Importance
+This section interprets the log-linear regression model to understand which features contribute most to variations in picking duration.
+
+### 5.5.1 Feature Group Contribution
+
+```{r}
+# Tidy the model coefficients
+log_coef <- tidy(lm_model_log)
+
+# Group terms into broader feature categories
+log_coef <- log_coef %>%
+  mutate(
+    Group = case_when(
+      grepl("^volume", term) ~ "Volume",
+      grepl("^picker", term) ~ "Picker",
+      grepl("^weekday_name", term) ~ "Weekday",
+      grepl("^location_row", term) ~ "Location Row",
+      grepl("^location_id", term) ~ "Location ID",
+      TRUE ~ "Other"
+    )
+  )
+
+# Summarize absolute importance by group
+group_importance <- log_coef %>%
+  filter(term != "(Intercept)") %>%
+  group_by(Group) %>%
+  summarise(Total_Importance = sum(abs(estimate)), .groups = "drop") %>%
+  mutate(Percentage = 100 * Total_Importance / sum(Total_Importance))
+
+# Plot: Feature Group Contribution
+ggplot(group_importance, aes(x = reorder(Group, Percentage), y = Percentage)) +
+  geom_bar(stat = "identity", fill = "lightblue") +
+  coord_flip() +
+  labs(
+    title = "Feature Group Contribution (Log-Linear Model)",
+    x = "Feature Group",
+    y = "Percentage Contribution (%)"
+  ) +
+  theme_minimal()
+```
+The bar plot above shows that the picker identity alone accounts for over 75% of the explained variance in the model, indicating large differences in performance among individual pickers. The second most influential factor is Location ID, contributing nearly 19%, followed by Volume at about 5%. On the other hand, Location Row and Weekday had minimal influence (less than 1%), suggesting their effect on picking time is relatively minor.
+
+### 5.5.2 Top Predictor Coefficients
+
+```{r}
+# Plot top 30 predictors by absolute coefficient
+importance_log <- tidy(lm_model_log) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(abs_coef = abs(estimate)) %>%
+  arrange(desc(abs_coef)) %>%
+  slice(1:10)
+
+ggplot(importance_log, aes(x = reorder(term, abs_coef), y = abs_coef)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Top 10 Predictor Importance (Log-Linear Model)",
+    x = "Predictor",
+    y = "Absolute Coefficient"
+  ) +
+  theme_minimal()
+```
+The log-linear model highlights that volume and picker identity are the most influential factors affecting picking duration. Volume shows a strong positive effect—larger volumes significantly increase time. Picker effects vary widely, revealing clear productivity differences across staff. Additionally, certain location IDs contribute more to delays, likely due to layout or accessibility issues. These insights suggest that operational gains can be made by improving picker training, optimizing layout design, and adjusting processes for high-volume picks.
+
+## 5.6 Visualizing Important Variables
+  1. Top Influential Pickers
+```{r}
+# Extract picker coefficients
+coef_df <- as.data.frame(coef(summary(lm_model_log)))
+coef_df$variable <- rownames(coef_df)
+
+picker_effects <- coef_df %>%
+  filter(grepl("pickerpicker_", variable)) %>%
+  mutate(picker = gsub("pickerpicker_", "", variable)) %>%
+  select(picker, Estimate)
+
+picker_effects %>%
+  top_n(10, wt = Estimate) %>%
+  ggplot(aes(x = reorder(picker, Estimate), y = Estimate)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 10 Pickers with Highest Picking Time Effect",
+       x = "Picker", y = "Coefficient (log scale)")
+```
+  2. Effect of Weekday on Picking Time
+
+```{r}
+weekday_effects <- coef_df %>%
+  filter(grepl("weekday_name", variable)) %>%
+  mutate(weekday = gsub("weekday_name", "", variable)) %>%
+  select(weekday, Estimate)
+
+ggplot(weekday_effects, aes(x = reorder(weekday, Estimate), y = Estimate)) +
+  geom_col(fill = "orange") +
+  labs(title = "Effect of Weekday on Picking Duration (log scale)",
+       x = "Weekday", y = "Coefficient") +
+  theme_minimal()
+```
+  3. Effect of Warehouse Location (Location ID)
+
+```{r}
+location_effects <- coef_df %>%
+  filter(grepl("location_id", variable)) %>%
+  mutate(location = gsub("location_id", "", variable)) %>%
+  select(location, Estimate)
+
+ggplot(location_effects, aes(x = reorder(location, Estimate), y = Estimate)) +
+  geom_col(fill = "purple") +
+  labs(title = "Effect of Warehouse Location on Picking Time (log scale)",
+       x = "Location ID", y = "Coefficient") +
+  coord_flip() +
+  theme_minimal()
+```
+  4. Effect of location_row on picking duration
+```{r}
+# Extract coefficients related to location_row
+row_effects <- broom::tidy(lm_model_log) %>%
+  filter(grepl("location_row", term))
+
+# Clean term names
+row_effects <- row_effects %>%
+  mutate(location_row = gsub("location_row", "", term))
+
+# Plot
+ggplot(row_effects, aes(x = reorder(location_row, estimate), y = estimate)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Effect of Warehouse Row on Picking Time (Log Scale)",
+    x = "Row Number",
+    y = "Coefficient (log scale)"
+  ) +
+  theme_minimal()
+```
+  5. Row and column impact
+```{r}
+# Average picking time by row and column
+logistics_picking_data %>%
+  group_by(location_row, location_id) %>%
+  summarise(avg_log_duration = mean(log_duration, na.rm = TRUE)) %>%
+  ggplot(aes(x = location_id, y = location_row, fill = avg_log_duration)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c() +
+  labs(
+    title = "Average Log Picking Time by Warehouse Grid",
+    x = "Column",
+    y = "Row"
+  ) +
+    theme_minimal()
+```
+  6. Effect of Volume
+  
+```{r}
+ggplot(train_data1, aes(x = volume, y = log_duration)) +
+  geom_point(alpha = 0.2, color = "blue") +
+  geom_smooth(method = "lm", color = "red") +
+  labs(title = "Relationship between Volume and Log Picking Duration",
+       x = "Volume (m³)", y = "Log Picking Duration (sec)") +
+  theme_minimal()
+```
+# 5.7 Actual vs Predicted Plot
+```{r}
+# Predict on test set
+pred_log <- predict(lm_model_log, newdata = test_data1)
+pred_original_scale <- expm1(pred_log)  # back-transform from log
+
+# Create a comparison dataframe
+comparison_df <- data.frame(
+  Actual = test_data1$picking_duration_sec,
+  Predicted = pred_original_scale
+)
+
+# Plot actual vs. predicted
+library(ggplot2)
+ggplot(comparison_df, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.3, color = "steelblue") +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Actual vs Predicted Picking Duration",
+    x = "Actual Duration (sec)",
+    y = "Predicted Duration (sec)"
+  ) +
+  theme_minimal()
+```
+
+The majority of points cluster close to the 45-degree line, indicating that the model predicts picking durations reasonably well. However, deviations at higher actual durations suggest that rare long tasks are harder to predict accurately.
