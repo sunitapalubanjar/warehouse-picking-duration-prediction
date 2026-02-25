@@ -1,0 +1,269 @@
+---
+title: "Decision Tree Model"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readr)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(GGally)    # For advanced EDA plots
+library(broom)
+library(Metrics)
+
+```
+
+
+```{r}
+#load train and test data
+train_data <- readRDS("../data/train_data.rds")
+test_data  <- readRDS("../data/test_data.rds")
+```
+
+
+# 6. Decision Tree Modeling
+## 6.1 Model Fitting
+```{r}
+# Set seed for reproducibility
+set.seed(123)
+
+# Define the model formula
+formula_dt <- picking_duration_sec ~ volume + picker + weekday_name + location_row + location_id
+
+# Train the decision tree model using 10-fold cross-validation
+model_dt <- train(
+  formula_dt,
+  data = train_data,
+  method = "rpart",
+  trControl = trainControl(method = "cv", number = 10), 
+  tuneLength = 10
+)
+```
+
+```{r}
+# Print model summary
+print(model_dt)
+```
+
+## 6.2 Model Visualization
+```{r}
+# Plot the final decision tree
+rpart.plot(model_dt$finalModel, main = "Decision Tree for Picking Duration")
+```
+
+## 6.3 Prediction and Evaluation
+```{r}
+# 1. Predict on training data
+train_predictions_dt <- predict(model_dt, newdata = train_data)
+
+# 2. Predict on test data
+test_predictions_dt <- predict(model_dt, newdata = test_data)
+
+# 3. Calculate RMSE and MAE for training data
+rmse_train_dt <- rmse(train_data$picking_duration_sec, train_predictions_dt)
+mae_train_dt  <- mae(train_data$picking_duration_sec, train_predictions_dt)
+
+# 4. Calculate RMSE and MAE for test data
+rmse_test_dt <- rmse(test_data$picking_duration_sec, test_predictions_dt)
+mae_test_dt  <- mae(test_data$picking_duration_sec, test_predictions_dt)
+
+# 5. Print results
+# Train data
+cat("🔹 Training Performance:\n")
+cat("  RMSE:", round(rmse_train_dt, 2), "\n")
+cat("  MAE :", round(mae_train_dt, 2), "\n\n")
+
+
+# Test data
+cat("🔹 Test Performance:\n")
+cat("  RMSE:", round(rmse_test_dt, 2), "\n")
+cat("  MAE :", round(mae_test_dt, 2), "\n")
+
+```
+
+## 6.4 Model Accuracy (R-square)
+
+```{r}
+# Display all tuning results
+model_dt$results
+
+# Extract best-tuned R-squared
+best_r2 <- model_dt$results$Rsquared[model_dt$results$cp == model_dt$bestTune$cp]
+cat("Decision Tree R-squared:", round(best_r2, 4), "\n")
+
+
+```
+The decision tree model identified volume as the most critical feature in predicting picking duration, forming the root of the tree. Other influential features include location row, location ID, and specific picker IDs. However, the model’s performance is relatively low, with an R-squared of only 0.0222, indicating limited explanatory power. This suggests that while a few simple splits (especially on volume) capture some structure, the decision tree alone may be insufficient to model the complexity of picking duration. Still, it provides easily interpretable rules that can guide operational decisions, such as identifying volume thresholds associated with longer pick times or specific pickers needing further training.
+
+## 6.5 Additional Evaluation
+### 6.5.1 Variable Importance
+
+```{r}
+# Extract and plot top 20 most important variables
+varimp_dt <- varImp(model_dt)
+importance_df <- varimp_dt$importance %>%
+  rownames_to_column("Variable") %>%
+  arrange(desc(Overall)) %>%
+  slice(1:20)
+
+ggplot(importance_df, aes(x = reorder(Variable, Overall), y = Overall)) +
+  geom_col(fill = "skyblue") +
+  coord_flip() +
+  labs(
+    title = "Top 20 Variable Importance (Decision Tree)",
+    x = "Variable",
+    y = "Importance Score"
+  ) +
+  theme_minimal()
+```
+
+This chart illustrates the top 20 predictors that the decision tree model found most influential when estimating picking duration. The variable volume was by far the most dominant, indicating a strong relationship between order volume and time taken to pick items. Several picker IDs and location IDs also appear frequently, which implies individual performance differences and spatial factors might affect task duration
+
+### 6.5.2 Actual vs. Predicted Plots
+All Durations
+
+```{r}
+ggplot(test_data, aes(x = picking_duration_sec, y = test_predictions_dt)) +
+  geom_point(alpha = 0.3, color = "steelblue") +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Decision Tree: Actual vs Predicted Picking Duration",
+    x = "Actual Duration (sec)",
+    y = "Predicted Duration (sec)"
+  ) +
+  theme_minimal()
+```
+
+This plot compares the model’s predicted durations to the actual picking durations for the entire test dataset. The dashed red line represents perfect prediction (i.e., predicted = actual). The wide vertical dispersion of points away from this line indicates that while the model has some predictive power, it struggles to capture the full variability, especially for longer durations. Durations ≤ 500 sec
+
+```{r}
+subset_indices <- test_data$picking_duration_sec <= 500
+
+ggplot(
+  data = test_data[subset_indices, ],
+  aes(x = picking_duration_sec, y = test_predictions_dt[subset_indices])
+) +
+  geom_point(alpha = 0.7, color = "steelblue") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Predicted vs Actual (Actual Duration ≤ 500 sec)",
+    x = "Actual Duration (sec)",
+    y = "Predicted Duration (sec)"
+  ) +
+  theme_minimal()
+```
+
+To better understand model behavior for the more frequent short-duration tasks, I seperate predictions for cases ≤ 500 seconds. This subset helps us evaluate model accuracy in the typical operating range. While some alignment with the diagonal line exists, the horizontal banding suggests that the tree predicts a few fixed durations repeatedly—an artifact of the tree’s discrete decision structure.
+
+Durations > 500 sec
+
+```{r}
+subset_indices_long <- test_data$picking_duration_sec > 500
+
+ggplot(
+  data = test_data[subset_indices_long, ],
+  aes(x = test_predictions_dt[subset_indices_long], y = picking_duration_sec)
+) +
+  geom_point(alpha = 0.7, color = "darkorange") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Predicted vs Actual (Actual Duration > 500 sec)",
+    x = "Predicted Duration (sec)",
+    y = "Actual Duration (sec)"
+  ) +
+  theme_minimal()
+```
+
+This plot focuses on long-duration outliers (>500 seconds), which are much harder to predict. The underprediction pattern (points clustering below the diagonal line) shows that the model significantly underestimates long tasks. This weakness could stem from limited representation of long-duration samples in training or an inherent limitation of decision trees in modeling extremes.
+
+### 6.5.3 Segment-wise Performance
+
+```{r}
+# Define thresholds
+short_idx <- test_data$picking_duration_sec <= 200
+long_idx <- test_data$picking_duration_sec > 200
+
+# Compute R² for each segment
+r2_short <- R2(test_predictions_dt[short_idx], test_data$picking_duration_sec[short_idx])
+r2_long <- R2(test_predictions_dt[long_idx], test_data$picking_duration_sec[long_idx])
+
+cat("R² for short durations (≤ 200 sec):", round(r2_short, 4), "\n")
+cat("R² for long durations (> 200 sec):", round(r2_long, 4), "\n")
+
+```
+
+To quantitatively evaluate performance, we compute R² separately for short and long duration tasks. The model performs slightly better on shorter durations (R² ≈ 0.1271) compared to longer ones (R² ≈ 0.07). Both scores are relatively low, suggesting that while the model captures general patterns, there is room for significant improvement—particularly for long-duration predictions, where variance is higher and underprediction is prevalent.
+
+# 7. Model Comparison and Final Evaluation
+## 7.1 Performance Metrics Comparision
+We evaluate the performance of both models — the log-transformed linear regression and the decision tree — using common metrics on the test set:
+
+```{r}
+# Log-linear regression model performance
+rmse_log <- rmse(test_data1$picking_duration_sec, pred_original_scale)
+mae_log  <- mae(test_data1$picking_duration_sec, pred_original_scale)
+adj_r2_log <- summary(lm_model_log)$adj.r.squared  # Adjusted R² (in-sample)
+
+# Decision tree model performance
+rmse_dt <- rmse(test_data1$picking_duration_sec, test_predictions_dt)
+mae_dt  <- mae(test_data1$picking_duration_sec, test_predictions_dt)
+
+# Extract cross-validated R² from caret's model tuning
+best_r2_dt <- model_dt$results$Rsquared[model_dt$results$cp == model_dt$bestTune$cp]
+
+# Create comparison table
+comparison_df <- data.frame(
+  Model = c("Log-Linear Regression", "Decision Tree"),
+  RMSE = c(round(rmse_log, 2), round(rmse_dt, 2)),
+  MAE = c(round(mae_log, 2), round(mae_dt, 2)),
+  R2  = c(round(adj_r2_log, 4), round(best_r2_dt, 4))  # Now both are in-sample/cross-val R²
+)
+
+knitr::kable(comparison_df, caption = "Model Performance Comparison (RMSE, MAE, R²)")
+```
+
+While both models showed similar RMSE, the log-linear regression model outperformed the decision tree in terms of MAE and R². It explained about 20% of the variance in picking duration, whereas the decision tree explained less than 2%.
+
+## 7.2 Prediction Comparison Plots
+
+```{r}
+# Combine predictions and actuals into one dataframe
+comparison_plot_df <- data.frame(
+  Actual = test_data1$picking_duration_sec,
+  Log_Linear = pred_original_scale,
+  Decision_Tree = test_predictions_dt
+)
+
+# Melt the dataframe for ggplot
+library(reshape2)
+
+comparison_melt <- melt(comparison_plot_df, id.vars = "Actual",
+                        variable.name = "Model", value.name = "Predicted")
+
+# Plot: Actual vs Predicted for both models
+ggplot(comparison_melt, aes(x = Actual, y = Predicted, color = Model)) +
+  geom_point(alpha = 0.4) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black") +
+  facet_wrap(~ Model, scales = "free") +
+  labs(
+    title = "Actual vs Predicted Picking Duration by Model",
+    x = "Actual Duration (sec)",
+    y = "Predicted Duration (sec)"
+  ) +
+  theme_minimal()
+```
+
+Visualization of predicted vs. actual durations showed that the log-linear model captured trends more effectively, despite some underprediction for longer durations.
+
+In conclusion, log-linear model explained more variance in the outcome and made more accurate average predictions. The decision tree captured some nonlinear patterns but tended to overfit shorter durations and failed to generalize for longer ones, as seen in the prediction plots. In contrast, the log-linear model, though simpler, better aligned with the actual distribution and was more robust across duration ranges.
+
+Given its stronger overall performance and interpretability, the log-linear regression model is the preferred approach for predicting picking durations in this context. It also provides actionable insights into operational drivers like volume, picker efficiency, and location.
